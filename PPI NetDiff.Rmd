@@ -1,0 +1,1117 @@
+---
+title: "Network method Comparison"
+author: "Pakorn Sagulkoo 6380064520"
+date: "1/5/2565"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. Import libraries
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(igraph)
+library(ggpubr)
+#library(plotROC)
+library(pracma)
+library(diffuStats)
+```
+
+2. Data manipulation
+  2.1 Interaction dataframe
+
+```{r}
+interaction_df <- read.table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/STRING/9606.protein.links.v11.5.txt", header = TRUE)
+
+interaction_df
+```
+
+```{r}
+#Rescale function
+rescale <- function(data, low, high) {
+  min_d <- min(data)
+  max_d <- max(data)
+  rscl <- ((high-low)*(data-min_d))/(max_d-min_d)+low
+  rscl
+}
+```
+
+```{r}
+interaction_df_correct <- interaction_df %>%
+  filter(combined_score > 900) %>%
+  mutate(protein1 = substr(protein1, 6, nchar(protein1)), protein2 = substr(protein2, 6, nchar(protein2))) %>%
+  mutate(weight = rescale(combined_score, 0.1, 1)) %>%
+  select(protein1, protein2, weight)
+  
+  
+interaction_df_correct
+```
+
+  2.2 Preparing a graph and K matrix
+  
+```{r}
+g <- simplify(diffuStats::largest_cc(graph_from_data_frame(interaction_df_correct, directed = FALSE)))
+```
+
+```{r}
+largest_interaction_df <- as_data_frame(g, what  = "edges")
+largest_interaction_df
+```
+
+```{r}
+K_rl <- regularisedLaplacianKernel(g, sigma2=1, add_diag=1, normalized=FALSE)
+```
+
+```{r}
+#write.table(as.data.frame(K_rl), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/K_df.txt", sep = "\t", quote = F, row.names = TRUE, col.names = TRUE)
+```
+
+3. Method
+  3.1 IL6
+  
+```{r}
+IL6_string_df <- read.table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/GO/IL-6/String_IL6.txt", header = TRUE)
+IL6_string_df
+```
+  
+```{r}
+IL6_genes <- IL6_string_df$string_protein_id[IL6_string_df$string_protein_id %in% V(g)$name]
+```
+  
+```{r}
+length(IL6_string_df$string_protein_id)
+length(IL6_genes)
+```
+
+  3.1.1 Diffusion method
+  
+```{r}
+seed <- sample(IL6_genes, 0.1*length(IL6_genes))
+y <- ifelse(V(g)$name %in% seed,1,0)
+names(y) <- as.vector(names(V(g)))
+F_raw <- K_rl %*% y
+```
+
+```{r}
+F_raw2 <- diffuse(graph = g, scores = y, K = K_rl, method = "mc", n.perm = 1000)
+```
+
+```{r warning=FALSE, message=FALSE}
+#set.seed(123)
+
+percent_range <- seq(0,100,5)/100
+#percent_range
+
+average_TPR <- c()
+average_FPR <- c()
+#average_precision <- c()
+
+for (i in percent_range) {
+  TPR_vector <- c()
+  FPR_vector <- c()
+  #precision_vector <- c()
+  for (j in seq(1,5)) {
+    seed <- sample(IL6_genes, round(i*length(IL6_genes)))
+    score_run <- ifelse(V(g)$name %in% seed,1,0)
+    names(score_run) <- as.vector(names(V(g)))
+    #diffuse_scores <- diffuse(graph = g, scores = score_run, K = K_rl, method = "raw")
+    diffuse_scores <- K_rl %*% score_run
+    #diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores) %in% seed]
+    diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+    percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+    positive_test <- c(seed, names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]]))
+    negative_test <- V(g)$name[!V(g)$name %in% positive_test]
+    validated_negative <- V(g)$name[!V(g)$name %in% IL6_genes]
+    TP <- sum(positive_test %in% IL6_genes)
+    FP <- sum(!(positive_test %in% IL6_genes))
+    TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    Sensitivity <- TP/(TP+FN)
+    Specificity <- TN/(TN+FP)
+    #precision <- TP/(TP+FP)
+    TPR <- Sensitivity
+    FPR <- 1 - Specificity
+    TPR_vector[j] <- TPR
+    FPR_vector[j] <- FPR
+    #precision_vector[j] <- precision
+  }
+  average_TPR <- c(average_TPR, mean(TPR_vector))
+  average_FPR <- c(average_FPR, mean(FPR_vector))
+  #average_precision <- c(average_precision, mean(precision_vector))
+}
+```
+
+```{r}
+IL6_diffuse_result <- data.frame(percent_cover = seq(0,100,5), average_TPR, average_FPR)
+IL6_diffuse_result[1,c(2,3)] <- 0
+IL6_diffuse_result
+```
+
+```{r}
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(101, 1, 0.1))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(102, 1, 0.2))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(103, 1, 0.3))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(104, 1, 0.4))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(105, 1, 0.5))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(106, 1, 0.6))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(107, 1, 0.7))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(108, 1, 0.8))
+```
+
+
+```{r}
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(109, 1, 0.9))
+IL6_diffuse_result <- rbind(IL6_diffuse_result, c(110, 1, 1))
+
+IL6_diffuse_result
+```
+
+```{r}
+IL6_plot <- ggplot(IL6_diffuse_result, aes(x = average_FPR, y = average_TPR)) + 
+  xlim(0,1) +
+  #geom_path()+
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "blue",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+IL6_plot
+```
+
+```{r}
+AUC = trapz(IL6_diffuse_result$average_FPR, IL6_diffuse_result$average_TPR)
+AUC
+```
+
+```{r warning=FALSE, message=FALSE}
+percent_range <- seq(0,100,5)/100
+
+average_recall <- c()
+average_precision <- c()
+
+for (i in percent_range) {
+  recall_vector <- c()
+  precision_vector <- c()
+  for (j in seq(1,5)) {
+    seed <- sample(IL6_genes, round(i*length(IL6_genes)))
+    remaining_IL6_genes <- IL6_genes[!IL6_genes %in% seed]
+    no_seed_nodes <- V(g)$name[!V(g)$name %in% seed]
+    score_run <- ifelse(V(g)$name %in% seed,1,0)
+    names(score_run) <- as.vector(names(V(g)))
+    diffuse_scores <- K_rl %*% score_run
+    diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+    percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+    positive_test <- names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]])
+    negative_test <- no_seed_nodes[!no_seed_nodes %in% positive_test]
+    validated_negative <- no_seed_nodes[!no_seed_nodes %in% remaining_IL6_genes]
+    TP <- sum(positive_test %in% remaining_IL6_genes)
+    FP <- sum(!(positive_test %in% remaining_IL6_genes))
+    #TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    recall <- TP/(TP+FN)
+    precision <- TP/(TP+FP)
+    recall_vector[j] <- recall
+    precision_vector[j] <- precision
+  }
+  average_recall <- c(average_recall, mean(recall_vector))
+  average_precision <- c(average_precision, mean(precision_vector))
+}
+```
+
+```{r}
+IL6_diffuse_result2 <- data.frame(percent_cover = seq(0,100,5), average_recall, average_precision)
+IL6_diffuse_result2[21,c(2,3)] <- c(0, 1)
+IL6_diffuse_result2 <- IL6_diffuse_result2 %>%
+  arrange(average_recall)
+
+IL6_diffuse_result2
+```
+
+```{r}
+IL6_plot2 <- ggplot(IL6_diffuse_result2, aes(x = average_recall, y = average_precision)) + 
+  xlim(0,1) +
+  #geom_path()+
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0.01, yend = 0.01), colour = "blue",lty = "dashed") +
+  labs(x = "Recall", y = "Precision") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+IL6_plot2
+```
+
+```{r}
+AUC = trapz(IL6_diffuse_result2$average_recall, IL6_diffuse_result2$average_precision)
+AUC
+```
+
+  3.1.2 Neighborhood method
+  
+```{r}
+#Test neighborhood in the largest component
+#set.seed(123)
+
+percent_range <- seq(0,100,5)/100
+#percent_range
+
+average_TPR <- c()
+average_FPR <- c()
+
+for (i in percent_range) {
+  TPR_vector <- c()
+  FPR_vector <- c()
+  for (j in seq(1,5)) {
+    gene_sample <- sample(IL6_genes, round(i*length(IL6_genes)))
+    neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample)
+    positive_test <- c(gene_sample, neightbor_interaction$to)
+    positive_test <- unique(positive_test)
+    negative_test <- V(g)$name[!V(g)$name %in% positive_test]
+    validated_negative <- V(g)$name[!V(g)$name %in% IL6_genes]
+    TP <- sum(positive_test %in% IL6_genes)
+    FP <- sum(!(positive_test %in% IL6_genes))
+    TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    Sensitivity <- TP/(TP+FN)
+    Specificity <- TN/(TN+FP)
+    TPR <- Sensitivity
+    FPR <- 1 - Specificity
+    TPR_vector[j] <- TPR
+    FPR_vector[j] <- FPR
+  }
+  average_TPR <- c(average_TPR, mean(TPR_vector))
+  average_FPR <- c(average_FPR, mean(FPR_vector))
+}
+```
+
+```{r}
+IL6_neighbor_result <- data.frame(percent_cover = seq(0,100,5), average_TPR, average_FPR)
+#IL6_neighbor_result[1,c(2,3)] <- 0
+IL6_neighbor_result
+```
+
+```{r}
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(101, 1, 0.15))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(102, 1, 0.2))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(103, 1, 0.25))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(104, 1, 0.3))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(105, 1, 0.35))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(106, 1, 0.4))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(107, 1, 0.45))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(108, 1, 0.5))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(109, 1, 0.55))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(110, 1, 0.6))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(111, 1, 0.65))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(112, 1, 0.7))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(113, 1, 0.75))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(114, 1, 0.8))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(115, 1, 0.85))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(116, 1, 0.9))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(117, 1, 0.95))
+IL6_neighbor_result <- rbind(IL6_neighbor_result, c(118, 1, 1))
+
+IL6_neighbor_result
+```
+
+```{r}
+IL6_plot <- ggplot(IL6_neighbor_result, aes(x = average_FPR, y = average_TPR)) + 
+  xlim(0,1) +
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "blue",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+IL6_plot
+```
+
+```{r}
+AUC = trapz(IL6_neighbor_result$average_FPR, IL6_neighbor_result$average_TPR)
+AUC
+```
+
+```{r warning=FALSE, message=FALSE}
+percent_range <- seq(0,100,5)/100
+
+average_recall <- c()
+average_precision <- c()
+
+for (i in percent_range) {
+  recall_vector <- c()
+  precision_vector <- c()
+  for (j in seq(1,5)) {
+    gene_sample <- sample(IL6_genes, round(i*length(IL6_genes)))
+    remaining_IL6_genes <- IL6_genes[!IL6_genes %in% gene_sample]
+    remaining_all <- V(g)$name[!V(g)$name %in% gene_sample]
+    neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample)
+    positive_test <- neightbor_interaction$to[!neightbor_interaction$to %in% gene_sample]
+    positive_test <- unique(positive_test)
+    negative_test <- remaining_all[!remaining_all %in% positive_test]
+    validated_negative <- remaining_all[!remaining_all %in% remaining_IL6_genes]
+    TP <- sum(positive_test %in% remaining_IL6_genes)
+    FP <- sum(!(positive_test %in% remaining_IL6_genes))
+    #TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    recall <- TP/(TP+FN)
+    precision <- TP/(TP+FP)
+    recall_vector[j] <- recall
+    precision_vector[j] <- precision
+  }
+  average_recall <- c(average_recall, mean(recall_vector))
+  average_precision <- c(average_precision, mean(precision_vector))
+}
+```
+
+```{r}
+IL6_diffuse_result2 <- data.frame(percent_cover = seq(0,100,5), average_recall, average_precision)
+IL6_diffuse_result2[1,c(2,3)] <- c(0, 1)
+IL6_diffuse_result2[21,c(2,3)] <- c(1, 0)
+IL6_diffuse_result2 <- IL6_diffuse_result2 %>%
+  arrange(average_recall)
+
+IL6_diffuse_result2
+```
+
+```{r}
+IL6_plot2 <- ggplot(IL6_diffuse_result2, aes(x = average_recall, y = average_precision)) + 
+  xlim(0,1) +
+  #geom_path()+
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0.01, yend = 0.01), colour = "blue",lty = "dashed") +
+  labs(x = "Recall", y = "Precision") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+IL6_plot2
+```
+
+```{r}
+AUC = trapz(IL6_diffuse_result2$average_recall, IL6_diffuse_result2$average_precision)
+AUC
+```
+
+  3.1.3 Plot all results 
+
+```{r}
+IL6_neighbor_df <- IL6_neighbor_result %>%
+  mutate(type = "Neighborhood method") %>%
+  select(type, percent_cover, average_TPR, average_FPR)
+
+IL6_diffuse_df <- IL6_diffuse_result %>%
+  mutate(type = "Diffusion method") %>%
+  select(type, percent_cover, average_TPR, average_FPR)
+
+IL6_all_result <- rbind(IL6_neighbor_df, IL6_diffuse_df)
+```
+
+```{r}
+IL6_all_result
+```
+
+```{r}
+write.table(IL6_all_result, "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/Results/IL6_all_result.txt", sep = "\t", quote = F, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+plot1 <- ggplot(IL6_all_result, aes(x = average_FPR, y = average_TPR, group = type, color = type)) + 
+  xlim(0,1) +
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "black",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+plot1
+```
+
+```{r}
+ggsave(plot = plot1, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/plot1.png", dpi = 1000)
+```
+
+  3.2 TNF
+  
+```{r}
+TNF_string_df <- read.table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/GO/TNF/String_TNF.txt", header = TRUE)
+TNF_string_df
+```
+  
+```{r}
+TNF_genes <- TNF_string_df$string_protein_id[TNF_string_df$string_protein_id %in% V(g)$name]
+```
+
+```{r}
+length(TNF_genes)
+```
+
+  3.2.1 Diffusion method
+
+```{r}
+#set.seed(123)
+
+percent_range <- seq(0,100,5)/100
+#percent_range
+
+average_TPR <- c()
+average_FPR <- c()
+
+for (i in percent_range) {
+  TPR_vector <- c()
+  FPR_vector <- c()
+  for (j in seq(1,5)) {
+    seed <- sample(TNF_genes, round(i*length(TNF_genes)))
+    score_run <- ifelse(V(g)$name %in% seed,1,0)
+    names(score_run) <- as.vector(names(V(g)))
+    #diffuse_scores <- diffuse(graph = g, scores = score_run, K = K, method = "raw")
+    diffuse_scores <- K_rl %*% score_run
+    #diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores) %in% seed]
+    diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+    percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+    positive_test <- c(seed, names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]]))
+    negative_test <- V(g)$name[!V(g)$name %in% positive_test]
+    validated_negative <- V(g)$name[!V(g)$name %in% TNF_genes]
+    TP <- sum(positive_test %in% TNF_genes)
+    FP <- sum(!(positive_test %in% TNF_genes))
+    TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    Sensitivity <- TP/(TP+FN)
+    Specificity <- TN/(TN+FP)
+    TPR <- Sensitivity
+    FPR <- 1 - Specificity
+    TPR_vector[j] <- TPR
+    FPR_vector[j] <- FPR
+  }
+  average_TPR <- c(average_TPR, mean(TPR_vector))
+  average_FPR <- c(average_FPR, mean(FPR_vector))
+}
+```
+
+```{r}
+TNF_diffuse_result <- data.frame(percent_cover = seq(0,100,5), average_TPR, average_FPR)
+TNF_diffuse_result[1,c(2,3)] <- 0
+TNF_diffuse_result
+```
+
+```{r}
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(101, 1, 0.1))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(102, 1, 0.2))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(103, 1, 0.3))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(104, 1, 0.4))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(105, 1, 0.5))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(106, 1, 0.6))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(107, 1, 0.7))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(108, 1, 0.8))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(109, 1, 0.9))
+TNF_diffuse_result <- rbind(TNF_diffuse_result, c(110, 1, 1))
+
+TNF_diffuse_result
+```
+
+```{r}
+TNF_plot <- ggplot(TNF_diffuse_result, aes(x = average_FPR, y = average_TPR)) + 
+  xlim(0,1) +
+  geom_step()+
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "blue",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+TNF_plot
+```
+
+```{r}
+AUC = trapz(TNF_diffuse_result$average_FPR, TNF_diffuse_result$average_TPR)
+AUC
+```
+  
+  3.2.2 Neighborhood method
+
+```{r}
+#Test neighborhood in the largest component
+#set.seed(123)
+
+percent_range <- seq(0,100,5)/100
+#percent_range
+
+average_TPR <- c()
+average_FPR <- c()
+
+for (i in percent_range) {
+  TPR_vector <- c()
+  FPR_vector <- c()
+  for (j in seq(1,5)) {
+    gene_sample <- sample(TNF_genes, round(i*length(TNF_genes)))
+    neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample)
+    positive_test <- c(gene_sample, neightbor_interaction$to)
+    positive_test <- unique(positive_test)
+    negative_test <- V(g)$name[!V(g)$name %in% positive_test]
+    validated_negative <- V(g)$name[!V(g)$name %in% TNF_genes]
+    TP <- sum(positive_test %in% TNF_genes)
+    FP <- sum(!(positive_test %in% TNF_genes))
+    TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    Sensitivity <- TP/(TP+FN)
+    Specificity <- TN/(TN+FP)
+    TPR <- Sensitivity
+    FPR <- 1 - Specificity
+    TPR_vector[j] <- TPR
+    FPR_vector[j] <- FPR
+  }
+  average_TPR <- c(average_TPR, mean(TPR_vector))
+  average_FPR <- c(average_FPR, mean(FPR_vector))
+}
+```
+
+```{r}
+TNF_neighbor_result <- data.frame(percent_cover = seq(0,100,5), average_TPR, average_FPR)
+#IL6_neighbor_result[1,c(2,3)] <- 0
+TNF_neighbor_result
+```
+
+```{r}
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(101, 1, 0.25))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(102, 1, 0.3))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(103, 1, 0.35))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(104, 1, 0.4))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(105, 1, 0.45))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(106, 1, 0.5))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(107, 1, 0.55))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(108, 1, 0.6))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(109, 1, 0.65))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(110, 1, 0.7))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(111, 1, 0.75))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(112, 1, 0.8))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(113, 1, 0.85))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(114, 1, 0.9))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(115, 1, 0.95))
+TNF_neighbor_result <- rbind(TNF_neighbor_result, c(116, 1, 1))
+
+TNF_neighbor_result
+```
+
+```{r}
+TNF_plot <- ggplot(TNF_neighbor_result, aes(x = average_FPR, y = average_TPR)) + 
+  xlim(0,1) +
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "blue",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+TNF_plot
+```
+
+```{r}
+AUC = trapz(TNF_neighbor_result$average_FPR, TNF_neighbor_result$average_TPR)
+AUC
+```
+
+  3.2.3 Plot all results
+
+```{r}
+TNF_neighbor_df <- TNF_neighbor_result %>%
+  mutate(type = "Neighborhood method") %>%
+  select(type, percent_cover, average_TPR, average_FPR)
+
+TNF_diffuse_df <- TNF_diffuse_result %>%
+  mutate(type = "Diffusion method") %>%
+  select(type, percent_cover, average_TPR, average_FPR)
+
+TNF_all_result <- rbind(TNF_neighbor_df, TNF_diffuse_df)
+```
+
+```{r}
+TNF_all_result
+```
+
+```{r}
+write.table(TNF_all_result, "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/Results/TNF_all_result.txt", sep = "\t", quote = F, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+plot2 <- ggplot(TNF_all_result, aes(x = average_FPR, y = average_TPR, group = type, color = type)) + 
+  xlim(0,1) +
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "black",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+plot2
+```
+
+  3.3 IFN
+  
+```{r}
+IFN_string_df <- read.table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/GO/IFN/String_IFN.txt", header = TRUE)
+IFN_string_df
+```
+  
+```{r}
+IFN_genes <- IFN_string_df$string_protein_id[IFN_string_df$string_protein_id %in% V(g)$name]
+```
+
+```{r}
+length(IFN_genes)
+```
+
+  3.3.1 Diffusion method
+  
+```{r}
+#set.seed(123)
+
+percent_range <- seq(0,100,5)/100
+#percent_range
+
+average_TPR <- c()
+average_FPR <- c()
+
+for (i in percent_range) {
+  TPR_vector <- c()
+  FPR_vector <- c()
+  for (j in seq(1,5)) {
+    seed <- sample(IFN_genes, round(i*length(IFN_genes)))
+    score_run <- ifelse(V(g)$name %in% seed,1,0)
+    names(score_run) <- as.vector(names(V(g)))
+    #diffuse_scores <- diffuse(graph = g, scores = score_run, K = K, method = "raw")
+    diffuse_scores <- K_rl %*% score_run
+    #diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores) %in% seed]
+    diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+    percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+    positive_test <- c(seed, names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]]))
+    negative_test <- V(g)$name[!V(g)$name %in% positive_test]
+    validated_negative <- V(g)$name[!V(g)$name %in% IFN_genes]
+    TP <- sum(positive_test %in% IFN_genes)
+    FP <- sum(!(positive_test %in% IFN_genes))
+    TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    Sensitivity <- TP/(TP+FN)
+    Specificity <- TN/(TN+FP)
+    TPR <- Sensitivity
+    FPR <- 1 - Specificity
+    TPR_vector[j] <- TPR
+    FPR_vector[j] <- FPR
+  }
+  average_TPR <- c(average_TPR, mean(TPR_vector))
+  average_FPR <- c(average_FPR, mean(FPR_vector))
+}
+```
+  
+```{r}
+IFN_diffuse_result <- data.frame(percent_cover = seq(0,100,5), average_TPR, average_FPR)
+IFN_diffuse_result[1,c(2,3)] <- 0
+IFN_diffuse_result
+```
+
+```{r}
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(101, 1, 0.1))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(102, 1, 0.2))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(103, 1, 0.3))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(104, 1, 0.4))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(105, 1, 0.5))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(106, 1, 0.6))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(107, 1, 0.7))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(108, 1, 0.8))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(109, 1, 0.9))
+IFN_diffuse_result <- rbind(IFN_diffuse_result, c(110, 1, 1))
+
+IFN_diffuse_result
+```
+
+```{r}
+IFN_plot <- ggplot(IFN_diffuse_result, aes(x = average_FPR, y = average_TPR)) + 
+  xlim(0,1) +
+  geom_step()+
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "blue",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+IFN_plot
+```
+
+```{r}
+AUC = trapz(IFN_diffuse_result$average_FPR, IFN_diffuse_result$average_TPR)
+AUC
+```
+
+  3.3.2 Neighborhood method
+
+```{r}
+#Test neighborhood in the largest component
+#set.seed(123)
+
+percent_range <- seq(0,100,5)/100
+#percent_range
+
+average_TPR <- c()
+average_FPR <- c()
+
+for (i in percent_range) {
+  TPR_vector <- c()
+  FPR_vector <- c()
+  for (j in seq(1,5)) {
+    gene_sample <- sample(IFN_genes, round(i*length(IFN_genes)))
+    neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample)
+    positive_test <- c(gene_sample, neightbor_interaction$to)
+    positive_test <- unique(positive_test)
+    negative_test <- V(g)$name[!V(g)$name %in% positive_test]
+    validated_negative <- V(g)$name[!V(g)$name %in% IFN_genes]
+    TP <- sum(positive_test %in% IFN_genes)
+    FP <- sum(!(positive_test %in% IFN_genes))
+    TN <- sum(negative_test %in% validated_negative)
+    FN <- sum(!(negative_test %in% validated_negative))
+    Sensitivity <- TP/(TP+FN)
+    Specificity <- TN/(TN+FP)
+    TPR <- Sensitivity
+    FPR <- 1 - Specificity
+    TPR_vector[j] <- TPR
+    FPR_vector[j] <- FPR
+  }
+  average_TPR <- c(average_TPR, mean(TPR_vector))
+  average_FPR <- c(average_FPR, mean(FPR_vector))
+}
+```
+
+```{r}
+IFN_neighbor_result <- data.frame(percent_cover = seq(0,100,5), average_TPR, average_FPR)
+#IL6_neighbor_result[1,c(2,3)] <- 0
+IFN_neighbor_result
+```
+
+```{r}
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(101, 1, 0.2))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(102, 1, 0.3))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(104, 1, 0.4))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(106, 1, 0.5))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(108, 1, 0.6))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(110, 1, 0.7))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(112, 1, 0.8))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(114, 1, 0.9))
+IFN_neighbor_result <- rbind(IFN_neighbor_result, c(116, 1, 1))
+
+IFN_neighbor_result
+```
+
+```{r}
+IFN_plot <- ggplot(IFN_neighbor_result, aes(x = average_FPR, y = average_TPR)) + 
+  xlim(0,1) +
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "blue",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+IFN_plot
+```
+
+```{r}
+AUC = trapz(IFN_neighbor_result$average_FPR, IFN_neighbor_result$average_TPR)
+AUC
+```
+
+  3.3.3 Plot all results
+
+```{r}
+IFN_neighbor_df <- IFN_neighbor_result %>%
+  mutate(type = "Neighborhood method") %>%
+  select(type, percent_cover, average_TPR, average_FPR)
+
+IFN_diffuse_df <- IFN_diffuse_result %>%
+  mutate(type = "Diffusion method") %>%
+  select(type, percent_cover, average_TPR, average_FPR)
+
+IFN_all_result <- rbind(IFN_neighbor_df, IFN_diffuse_df)
+```
+
+```{r}
+IFN_all_result
+```
+
+```{r}
+write.table(IFN_all_result, "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/Results/IFN_all_result.txt", sep = "\t", quote = F, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+plot3 <- ggplot(IFN_all_result, aes(x = average_FPR, y = average_TPR, group = type, color = type)) + 
+  xlim(0,1) +
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "black",lty = "dashed") +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+plot3
+```
+
+4. Plot multiple results
+
+```{r}
+IL6_all_result <- IL6_all_result %>% mutate(pathway = "IL6")
+TNF_all_result <- TNF_all_result %>% mutate(pathway = "TNF")
+IFN_all_result <- IFN_all_result %>% mutate(pathway = "IFN")
+
+all_pathway_result <- rbind(IL6_all_result, TNF_all_result, IFN_all_result)
+```
+
+```{r}
+all_pathway_result
+```
+
+```{r}
+write.table(all_pathway_result, "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/Results/all_pathway_result.txt", sep = "\t", quote = F, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+dat_text1 <- data.frame(
+  label = c("AUROC = 0.9681", "AUROC = 0.9612", "AUROC = 0.9646"),
+  method = c("Diffusion", "Diffusion", "Diffusion"),
+  pathway   = c("IFN", "IL6", "TNF"),
+  x     = c(0.7, 0.7, 0.7),
+  y     = c(0.2, 0.2, 0.2))
+
+dat_text2 <- data.frame(
+  label = c("AUROC = 0.9338", "AUROC = 0.9539", "AUROC = 0.9123"),
+  method = c("Neighborhood", "Neighborhood", "Neighborhood"),
+  pathway   = c("IFN", "IL6", "TNF"),
+  x     = c(0.7, 0.7, 0.7),
+  y     = c(0.1, 0.1, 0.1))
+```
+
+```{r}
+dat_text
+```
+
+```{r}
+plot_all <- ggplot(all_pathway_result, aes(x = average_FPR, y = average_TPR, group = type, color = type)) + 
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "black",lty = "dashed") +
+  facet_grid(.~pathway) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    text = element_text(size = 25),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position="bottom",
+    panel.spacing.x = unit(8, "mm")
+        ) +
+  scale_color_manual(name = "Method", labels = c("Diffusion", "Neighborhood"), values=c('#005AB5','#DC3220')) +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(0,1)) +
+  geom_text(
+    data    = dat_text1,
+    mapping = aes(x = x, y = y, label = label, group = NULL, color = NULL),
+    size=7,
+    show.legend = FALSE,
+    color = "#005AB5"
+    ) +
+  geom_text(
+    data    = dat_text2,
+    mapping = aes(x = x, y = y, label = label, group = NULL, color = NULL),
+    size=7,
+    show.legend = FALSE,
+    color = "#DC3220"
+    ) 
+
+plot_all
+```
+
+```{r}
+ggsave(plot = plot_all, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/plot_all.png", dpi = 1000, height = 6, width = 14.5)
+```
+
+
+5. Comparison between diffusion and neighborhood when having 50% known proteins
+  5.1 IL6
+  
+```{r}
+#set.seed(1234)
+gene_sample_IL6 <- sample(IL6_genes, round(0.1*length(IL6_genes)))
+gene_sample_IL6
+```
+  
+```{r}
+#Test sample 10% genes in IL6 of the largest component in the neighborhood method
+neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample_IL6)
+neighborhood_IL6_members <- c(gene_sample_IL6, neightbor_interaction$to)
+neighborhood_IL6_members <- unique(neighborhood_IL6_members)
+
+neighborhood_IL6_members
+```
+  
+```{r}
+#Test sample 10% genes in IL6 of the largest component in the neighborhood method
+seed <- gene_sample_IL6
+score_run <- ifelse(V(g)$name %in% seed,1,0)
+names(score_run) <- as.vector(names(V(g)))
+diffuse_scores <- K_rl %*% score_run
+diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+diffuse_IL6_members <- c(seed, names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]]))
+
+diffuse_IL6_members
+```
+  
+```{r}
+write.table(as.data.frame(neighborhood_IL6_members), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/neighborhood_IL6_members_10%.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(as.data.frame(diffuse_IL6_members), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/diffuse_IL6_members_10%.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+  5.2 TNF
+  
+```{r}
+#set.seed(1234)
+gene_sample_TNF <- sample(TNF_genes, round(0.1*length(TNF_genes)))
+gene_sample_TNF
+```
+  
+```{r}
+#Test sample 10% genes in TNF of the largest component in the neighborhood method
+neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample_TNF)
+neighborhood_TNF_members <- c(gene_sample_TNF, neightbor_interaction$to)
+neighborhood_TNF_members <- unique(neighborhood_TNF_members)
+
+neighborhood_TNF_members
+```
+
+```{r}
+#Test sample 10% genes in TNF of the largest component in the neighborhood method
+seed <- gene_sample_TNF
+score_run <- ifelse(V(g)$name %in% seed,1,0)
+names(score_run) <- as.vector(names(V(g)))
+diffuse_scores <- K_rl %*% score_run
+diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+diffuse_TNF_members <- c(seed, names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]]))
+
+diffuse_TNF_members
+```
+
+```{r}
+write.table(as.data.frame(neighborhood_TNF_members), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/neighborhood_TNF_members_10%.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(as.data.frame(diffuse_TNF_members), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/diffuse_TNF_members_10%.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+  5.3 IFN
+  
+```{r}
+#set.seed(1234)
+gene_sample_IFN <- sample(IFN_genes, round(0.1*length(IFN_genes)))
+gene_sample_IFN
+```
+  
+```{r}
+#Test sample 10% genes in IFN of the largest component in the neighborhood method
+neightbor_interaction <- largest_interaction_df %>% filter(from %in% gene_sample_IFN)
+neighborhood_IFN_members <- c(gene_sample_IFN, neightbor_interaction$to)
+neighborhood_IFN_members <- unique(neighborhood_IFN_members)
+
+neighborhood_IFN_members
+```
+
+```{r}
+#Test sample 10% genes in IFN of the largest component in the neighborhood method
+seed <- gene_sample_IFN
+score_run <- ifelse(V(g)$name %in% seed,1,0)
+names(score_run) <- as.vector(names(V(g)))
+diffuse_scores <- K_rl %*% score_run
+diffuse_score_no_seed <- diffuse_scores[!names(diffuse_scores[,1]) %in% seed, 1]
+percentile_scores <- quantile(diffuse_score_no_seed, prob = seq(0, 1, 0.05))
+diffuse_IFN_members <- c(seed, names(diffuse_score_no_seed[diffuse_score_no_seed >= percentile_scores["95%"]]))
+
+diffuse_IFN_members
+```
+
+```{r}
+write.table(as.data.frame(neighborhood_IFN_members), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/neighborhood_IFN_members_10%.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(as.data.frame(diffuse_IFN_members), "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/diffuse_IFN_members_10%.txt", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+```{r}
+all_path_df <- read.csv("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/Results/all_pathway_result.csv",  header=TRUE)
+```
+
+```{r}
+all_path_df <- all_path_df %>% rename(type = X.ปฟtype)
+```
+
+```{r}
+plot_all2 <- ggplot(all_path_df, aes(x = average_FPR, y = average_TPR, group = type, color = type)) + 
+  geom_step() +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), colour = "black",lty = "dashed") +
+  facet_grid(.~pathway) +
+  labs(x = "1 - Specificity", y = "Sensitivity") +
+  theme(
+    panel.background = element_rect(fill = 'white', color = 'black'),
+    panel.grid = element_blank(),
+    strip.background =element_rect(fill = "white"),
+    text = element_text(size = 25),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position="bottom",
+    legend.key = element_rect(fill = "white"),
+    panel.spacing.x = unit(8, "mm")
+        ) +
+  scale_color_manual(name = "Method", labels = c("Diffusion", "Neighborhood"), values=c('blue','red')) +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(0,1)) +
+  geom_text(
+    data    = dat_text1,
+    mapping = aes(x = x, y = y, label = label, group = NULL, color = NULL),
+    size=7,
+    show.legend = FALSE,
+    color = "blue"
+    ) +
+  geom_text(
+    data    = dat_text2,
+    mapping = aes(x = x, y = y, label = label, group = NULL, color = NULL),
+    size=7,
+    show.legend = FALSE,
+    color = "red"
+    ) 
+
+plot_all2
+```
+
+```{r}
+ggsave(plot = plot_all2, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/NH vs DF/plot_all2.png", dpi = 1000, height = 6, width = 14.5)
+```
+
+
+
