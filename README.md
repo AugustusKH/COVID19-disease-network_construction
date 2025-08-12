@@ -1,2 +1,2 @@
 # COVID19_disease_network_construction
-This repository collects a source code for COVID19-related biological network construction.
+This repository collects a source code for COVID19-related biological network construction. There are two main methods to construct the network based on differentially expressed genes (DEGs) earned from transcriptomics analysis: neighbourhood and diffusion methods. We also compared the construction performance between the two methods. Further details are available on our conference article (https://ieeexplore.ieee.org/document/10049313).
